@@ -80,10 +80,21 @@ func (s StaticToken) Token(context.Context) (string, error) {
 }
 
 // Client talks to one Frege environment as one user.
+// The two environments every project has. A project-scoped call is answered by
+// one of them, and the choice is carried in a header.
+const (
+	StageStaging = "staging"
+	StageLive    = "live"
+)
+
+// StageHeader carries the environment on every project-scoped request.
+const StageHeader = "X-Frege-Stage"
+
 type Client struct {
 	baseURL string
 	http    *http.Client
 	tokens  TokenSource
+	stage   string
 }
 
 // Option configures a Client.
@@ -98,6 +109,22 @@ func WithBaseURL(u string) Option {
 // WithHTTPClient supplies your own *http.Client (timeouts, proxy, and so on).
 func WithHTTPClient(h *http.Client) Option {
 	return func(c *Client) { c.http = h }
+}
+
+// WithStage picks the environment every project-scoped call is answered by:
+// frege.StageStaging or frege.StageLive.
+//
+// OMITTING THIS MEANS LIVE. That is the server's default, not this client's
+// choice, and it is the one thing worth knowing before pointing a test at a
+// real deployment: a run that means to exercise staging and never sets a stage
+// reads production's spec and spends production's credential, and every
+// response looks perfectly normal.
+//
+// An API key is bound to ONE environment when it is issued, so a key and a
+// stage that disagree fail rather than crossing over. That is the server
+// protecting you, not this option.
+func WithStage(stage string) Option {
+	return func(c *Client) { c.stage = stage }
 }
 
 // New builds a Client. tokens supplies the bearer for each call — usually a
@@ -190,7 +217,7 @@ func (rt *RefreshingToken) Refresh(ctx context.Context) (string, error) {
 		return "", errors.New("frege: no refresh token available; sign in again")
 	}
 	var s Session
-	err := roundTrip(ctx, rt.http, http.MethodPost, baseURLOr(rt.baseURL)+"/v1/auth/refresh", "",
+	err := roundTrip(ctx, rt.http, http.MethodPost, baseURLOr(rt.baseURL)+"/v1/auth/refresh", "", "",
 		map[string]string{"refresh_token": rt.refresh}, &s)
 	if err != nil {
 		return "", err
@@ -209,7 +236,7 @@ func (rt *RefreshingToken) Refresh(ctx context.Context) (string, error) {
 // account on first use. Follow with VerifyMagicCode. baseURL may be "" for
 // DefaultBaseURL.
 func SendMagicCode(ctx context.Context, baseURL, email string) error {
-	return roundTrip(ctx, authHTTP, http.MethodPost, baseURLOr(baseURL)+"/v1/auth/magic", "",
+	return roundTrip(ctx, authHTTP, http.MethodPost, baseURLOr(baseURL)+"/v1/auth/magic", "", "",
 		map[string]string{"email": email}, nil)
 }
 
@@ -218,7 +245,7 @@ func SendMagicCode(ctx context.Context, baseURL, email string) error {
 // DefaultBaseURL.
 func VerifyMagicCode(ctx context.Context, baseURL, email, code string) (*Session, error) {
 	var s Session
-	err := roundTrip(ctx, authHTTP, http.MethodPost, baseURLOr(baseURL)+"/v1/auth/magic/verify", "",
+	err := roundTrip(ctx, authHTTP, http.MethodPost, baseURLOr(baseURL)+"/v1/auth/magic/verify", "", "",
 		map[string]string{"email": email, "code": code}, &s)
 	if err != nil {
 		return nil, err
@@ -376,7 +403,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	if err != nil {
 		return err
 	}
-	err = roundTrip(ctx, c.http, method, c.baseURL+path, token, body, out)
+	err = roundTrip(ctx, c.http, method, c.baseURL+path, token, c.stage, body, out)
 
 	// A rejected token gets exactly one refresh-and-retry, and only if the token
 	// source knows how to refresh. This is where a short-lived access token
@@ -388,7 +415,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 			if rerr != nil {
 				return rerr
 			}
-			return roundTrip(ctx, c.http, method, c.baseURL+path, newTok, body, out)
+			return roundTrip(ctx, c.http, method, c.baseURL+path, newTok, c.stage, body, out)
 		}
 	}
 	return err
@@ -397,7 +424,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 // roundTrip performs one request and decodes the envelope. A 2xx unwraps the
 // "data" field into out (nil out is fine, e.g. a 204). Anything else becomes an
 // *APIError from the "error" envelope.
-func roundTrip(ctx context.Context, hc *http.Client, method, fullURL, token string, body, out any) error {
+func roundTrip(ctx context.Context, hc *http.Client, method, fullURL, token, stage string, body, out any) error {
 	var reader io.Reader
 	if body != nil {
 		buf, err := json.Marshal(body)
@@ -416,6 +443,11 @@ func roundTrip(ctx context.Context, hc *http.Client, method, fullURL, token stri
 	req.Header.Set("Accept", "application/json")
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	// Sent only when chosen. An empty header is not the same as no header, and
+	// the server reads absence as live.
+	if stage != "" {
+		req.Header.Set(StageHeader, stage)
 	}
 
 	resp, err := hc.Do(req)
