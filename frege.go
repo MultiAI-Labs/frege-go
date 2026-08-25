@@ -292,6 +292,13 @@ func (c *Client) InvokeTool(ctx context.Context, projectID int64, toolName strin
 	for _, opt := range opts {
 		opt(&body)
 	}
+	// Caught here rather than at the server, because the mistake is in the
+	// calling code and this is where the line number is. Naming a customer two
+	// ways means believing something untrue about your own state, and the
+	// server refuses it for the same reason.
+	if body.ClientID != nil && body.ClientRef != "" {
+		return nil, errors.New("frege: pass AsClient or AsCustomer, not both")
+	}
 	path := "/v1/projects/" + strconv.FormatInt(projectID, 10) + "/tools/" + url.PathEscape(toolName) + "/invoke"
 	var res ToolResult
 	if err := c.do(ctx, http.MethodPost, path, body, &res); err != nil {
@@ -303,6 +310,7 @@ func (c *Client) InvokeTool(ctx context.Context, projectID int64, toolName strin
 type invokeBody struct {
 	Arguments map[string]any `json:"arguments"`
 	ClientID  *int64         `json:"client_id,omitempty"`
+	ClientRef string         `json:"client_ref,omitempty"`
 }
 
 // InvokeOption tunes a single InvokeTool call.
@@ -311,8 +319,34 @@ type InvokeOption func(*invokeBody)
 // AsClient runs the tool with one connected customer's stored credential
 // instead of the project's own. Required on a self-serve project, which has no
 // project-level credential.
+//
+// The id comes back from enrolling the customer. If you did not keep it, use
+// AsCustomer instead — it is almost always the better call.
 func AsClient(clientID int64) InvokeOption {
 	return func(b *invokeBody) { b.ClientID = &clientID }
+}
+
+// AsCustomer runs the tool as the customer you enrolled under this reference.
+//
+// The reference is the external_ref you supplied when connecting them: the
+// phone number, the chat id, whatever your channel already knows them by. That
+// is the point — a bot holds a chat id, not a row id, and keeping a table that
+// maps one to the other means running a database whose only job is to remember
+// something Frege already knows.
+//
+// It is a LABEL and not a secret. It authorises nothing on its own: your API
+// key is what says you may spend this project's customers' credentials, and it
+// could spend this one by id regardless. What the customer's own sign-in
+// proved, it proved at enrolment.
+//
+// One caveat worth knowing before you rely on it. The same person enrolled
+// twice — once in a browser, once through your bot — is two customers holding
+// two different upstream credentials, because linking them needs a verified
+// claim common to both and Frege will not guess. A reference that names both is
+// REFUSED rather than resolved, since picking one would spend an account you
+// did not name. Use AsClient with the id when that happens.
+func AsCustomer(reference string) InvokeOption {
+	return func(b *invokeBody) { b.ClientRef = reference }
 }
 
 // ---- types -----------------------------------------------------------------
