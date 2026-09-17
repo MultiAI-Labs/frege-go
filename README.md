@@ -163,6 +163,6 @@ SDK uses). See the Frege docs for the MCP connect flow.
 | `frege.VerifyMagicCode(ctx, baseURL, email, code)` | Exchange the code for a `Session` | — |
 | `frege.NewRefreshingToken(access, refresh, opts…)` | A user-token source that auto-refreshes | — |
 
-For a self-serve project (each customer has their own credential), pass
+When each customer has their own upstream credential, pass
 `frege.AsClient(customerID)` to `InvokeTool`. All calls take a
 `context.Context`, so timeouts and cancellation work as usual.

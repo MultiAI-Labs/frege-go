@@ -317,7 +317,7 @@ type invokeBody struct {
 type InvokeOption func(*invokeBody)
 
 // AsClient runs the tool with one connected customer's stored credential
-// instead of the project's own. Required on a self-serve project, which has no
+// instead of the project's own. Required wherever the project has no shared
 // project-level credential.
 //
 // The id comes back from enrolling the customer. If you did not keep it, use
@@ -391,7 +391,6 @@ type Project struct {
 	Description     string `json:"description"`
 	UpstreamBaseURL string `json:"upstream_base_url"`
 	MCPURL          string `json:"mcp_url"`
-	SelfServe       bool   `json:"self_serve"`
 	WritePolicy     string `json:"write_policy"`
 }
 
